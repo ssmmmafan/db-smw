@@ -161,6 +161,7 @@ Page* BufferPoolManager::new_page(PageId* page_id) {
     // 3.   将frame的数据写回磁盘
     // 4.   固定frame，更新pin_count_
     // 5.   返回获得的page
+    std::scoped_lock lock{latch_};
     frame_id_t frame_id;
     if (!find_victim_page(&frame_id)) {
         return nullptr;
@@ -202,8 +203,10 @@ bool BufferPoolManager::delete_page(PageId page_id) {
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
     }
     page_table_.erase(page_id);
+    replacer_->pin(frame_id);
     page->reset_memory();
     page->id_ = {INVALID_PAGE_ID, INVALID_PAGE_ID};
+    page->is_dirty_ = false;
     free_list_.push_back(frame_id);
     return true;
 }

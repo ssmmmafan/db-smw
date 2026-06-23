@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "storage/disk_manager.h"
 
 #include <assert.h>    // for assert
+#include <cerrno>
 #include <string.h>    // for memset
 #include <sys/stat.h>  // for stat
 #include <unistd.h>    // for lseek
@@ -132,6 +133,9 @@ void DiskManager::destroy_file(const std::string &path) {
         throw FileNotClosedError(path);
     }
     if (unlink(path.c_str()) < 0) {
+        if (errno == ENOENT) {
+            throw FileNotFoundError(path);
+        }
         throw UnixError();
     }
 }
@@ -151,6 +155,9 @@ int DiskManager::open_file(const std::string &path) {
     }
     int fd = open(path.c_str(), O_RDWR);
     if (fd < 0) {
+        if (errno == ENOENT) {
+            throw FileNotFoundError(path);
+        }
         throw UnixError();
     }
     path2fd_[path] = fd;

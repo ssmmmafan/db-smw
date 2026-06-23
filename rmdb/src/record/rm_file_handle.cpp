@@ -23,6 +23,7 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     auto record = std::make_unique<RmRecord>(file_hdr_.record_size);
     memcpy(record->data, page_handle.get_slot(rid.slot_no), file_hdr_.record_size);
+    buffer_pool_manager_->unpin_page({fd_, rid.page_no}, false);
     return record;
 }
 
@@ -46,7 +47,6 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
     Bitmap::set(page_handle.bitmap, slot_no);
     page_handle.page_hdr->num_records++;
     if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page) {
-        int page_no = page_handle.page->get_page_id().page_no;
         file_hdr_.first_free_page_no = page_handle.page_hdr->next_free_page_no;
         disk_manager_->write_page(fd_, RM_FILE_HDR_PAGE, (char *)&file_hdr_, sizeof(file_hdr_));
     }

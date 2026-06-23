@@ -26,6 +26,7 @@ RmScan::RmScan(const RmFileHandle *file_handle) : file_handle_(file_handle) {
             rid_ = Rid{page_no, slot_no};
             return;
         }
+        file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, page_no}, false);
         page_no++;
     }
     rid_ = Rid{-1, -1};
@@ -41,14 +42,18 @@ void RmScan::next() {
     int slot_no = rid_.slot_no;
     int num_records_per_page = file_handle_->get_file_hdr().num_records_per_page;
     int num_pages = file_handle_->get_file_hdr().num_pages;
+    if (page_no >= 0 && page_no < num_pages) {
+        file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, page_no}, false);
+    }
     slot_no++;
     while (page_no < num_pages) {
         RmPageHandle page_handle = file_handle_->fetch_page_handle(page_no);
-        int next_slot = Bitmap::next_bit(true, page_handle.bitmap, num_records_per_page, slot_no);
+        int next_slot = Bitmap::next_bit(true, page_handle.bitmap, num_records_per_page, slot_no - 1);
         if (next_slot < num_records_per_page) {
             rid_ = Rid{page_no, next_slot};
             return;
         }
+        file_handle_->buffer_pool_manager_->unpin_page({file_handle_->fd_, page_no}, false);
         page_no++;
         slot_no = -1;
     }
