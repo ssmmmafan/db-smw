@@ -14,7 +14,6 @@ See the Mulan PSL v2 for more details. */
 #include <chrono>
 #include <cstdint>
 #include <string>
-
 #define BUFFER_LENGTH 8192
 
 /** Cycle detection is performed every CYCLE_DETECTION_INTERVAL milliseconds. */
