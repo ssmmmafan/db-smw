@@ -28,6 +28,7 @@ class Query{
     std::vector<Condition> conds;
     // 投影列
     std::vector<TabCol> cols;
+    std::vector<SelItem> sel_items;
     // 表名
     std::vector<std::string> tables;
     // update 的set 值
@@ -57,4 +58,6 @@ private:
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val, const ColMeta *col = nullptr);
     void coerce_value_to_col_type(Value &val, ColType col_type);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
+    ColMeta get_col_meta(const std::vector<ColMeta> &all_cols, const TabCol &target);
+    std::string default_agg_alias(const AggSpec &agg);
 };

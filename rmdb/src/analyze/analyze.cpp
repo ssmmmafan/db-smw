@@ -68,24 +68,47 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             }
         }
 
-        // 处理target list，再target list中添加上表名，例如 a.id
-        for (auto &sv_sel_col : x->cols) {
-            TabCol sel_col = {.tab_name = sv_sel_col->tab_name, .col_name = sv_sel_col->col_name};
-            query->cols.push_back(sel_col);
-        }
-        
+        // 处理target list
         std::vector<ColMeta> all_cols;
         get_all_cols(query->tables, all_cols);
-        if (query->cols.empty()) {
-            // select all columns
+        if (x->select_items.empty()) {
             for (auto &col : all_cols) {
                 TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
                 query->cols.push_back(sel_col);
             }
         } else {
-            // infer table name from column name
-            for (auto &sel_col : query->cols) {
-                sel_col = check_column(all_cols, sel_col);  // 列元数据校验
+            for (auto &sv_item : x->select_items) {
+                SelItem item;
+                if (auto sv_col = std::dynamic_pointer_cast<ast::Col>(sv_item->expr)) {
+                    item.kind = SEL_COL;
+                    item.col = {.tab_name = sv_col->tab_name, .col_name = sv_col->col_name};
+                    item.col = check_column(all_cols, item.col);
+                    item.alias = sv_item->alias.empty() ? item.col.col_name : sv_item->alias;
+                    query->cols.push_back(item.col);
+                } else if (auto sv_agg = std::dynamic_pointer_cast<ast::AggExpr>(sv_item->expr)) {
+                    item.kind = SEL_AGG;
+                    item.agg.type = static_cast<AggType>(sv_agg->type);
+                    item.agg.is_star = (sv_agg->col == nullptr);
+                    if (!item.agg.is_star) {
+                        item.agg.col = {.tab_name = sv_agg->col->tab_name, .col_name = sv_agg->col->col_name};
+                        item.agg.col = check_column(all_cols, item.agg.col);
+                        auto col_meta = get_col_meta(all_cols, item.agg.col);
+                        if (item.agg.type == AGG_SUM) {
+                            if (col_meta.type != TYPE_INT && col_meta.type != TYPE_FLOAT) {
+                                throw IncompatibleTypeError(coltype2str(col_meta.type), "SUM");
+                            }
+                        } else if (item.agg.type == AGG_MAX || item.agg.type == AGG_MIN) {
+                            if (col_meta.type != TYPE_INT && col_meta.type != TYPE_FLOAT &&
+                                col_meta.type != TYPE_STRING) {
+                                throw IncompatibleTypeError(coltype2str(col_meta.type), coltype2str(TYPE_STRING));
+                            }
+                        }
+                    }
+                    item.alias = sv_item->alias.empty() ? default_agg_alias(item.agg) : sv_item->alias;
+                } else {
+                    throw InternalError("Unexpected select item type");
+                }
+                query->sel_items.push_back(item);
             }
         }
         //处理where条件
@@ -289,4 +312,28 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
         {ast::SV_OP_GT, OP_GT}, {ast::SV_OP_LE, OP_LE}, {ast::SV_OP_GE, OP_GE},
     };
     return m.at(op);
+}
+
+ColMeta Analyze::get_col_meta(const std::vector<ColMeta> &all_cols, const TabCol &target) {
+    for (auto &col : all_cols) {
+        if (col.tab_name == target.tab_name && col.name == target.col_name) {
+            return col;
+        }
+    }
+    throw ColumnNotFoundError(target.col_name);
+}
+
+std::string Analyze::default_agg_alias(const AggSpec &agg) {
+    switch (agg.type) {
+        case AGG_COUNT:
+            return agg.is_star ? "COUNT(*)" : "COUNT(" + agg.col.col_name + ")";
+        case AGG_SUM:
+            return "SUM(" + agg.col.col_name + ")";
+        case AGG_MAX:
+            return "MAX(" + agg.col.col_name + ")";
+        case AGG_MIN:
+            return "MIN(" + agg.col.col_name + ")";
+        default:
+            return "agg";
+    }
 }

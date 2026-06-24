@@ -34,6 +34,23 @@ struct TabCol {
     }
 };
 
+enum AggType { AGG_COUNT, AGG_SUM, AGG_MAX, AGG_MIN };
+
+struct AggSpec {
+    AggType type;
+    TabCol col;
+    bool is_star = false;
+};
+
+enum SelKind { SEL_COL, SEL_AGG };
+
+struct SelItem {
+    SelKind kind;
+    TabCol col;
+    AggSpec agg;
+    std::string alias;
+};
+
 struct Value {
     ColType type;  // type of value
     union {

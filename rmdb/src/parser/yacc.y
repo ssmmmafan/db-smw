@@ -23,6 +23,7 @@ using namespace ast;
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT BIGINT CHAR FLOAT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
+COUNT SUM MAX MIN AS
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
@@ -39,10 +40,12 @@ WHERE UPDATE SET SELECT INT BIGINT CHAR FLOAT DATETIME INDEX AND JOIN EXIT HELP 
 %type <sv_expr> expr
 %type <sv_val> value
 %type <sv_vals> valueList
-%type <sv_str> tbName colName
+%type <sv_str> tbName colName optAsAlias
 %type <sv_strs> tableList colNameList
 %type <sv_col> col
-%type <sv_cols> colList selector
+%type <sv_cols> colList
+%type <sv_select_item> selectorItem
+%type <sv_select_items> selector selectorList
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
@@ -340,7 +343,61 @@ selector:
     {
         $$ = {};
     }
-    |   colList
+    |   selectorList
+    ;
+
+selectorList:
+        selectorItem
+    {
+        $$ = std::vector<std::shared_ptr<SelectItem>>{$1};
+    }
+    |   selectorList ',' selectorItem
+    {
+        $$.push_back($3);
+    }
+    ;
+
+selectorItem:
+        col optAsAlias
+    {
+        $$ = std::make_shared<SelectItem>(std::static_pointer_cast<Expr>($1), $2);
+    }
+    |   COUNT '(' '*' ')' optAsAlias
+    {
+        $$ = std::make_shared<SelectItem>(
+            std::make_shared<AggExpr>(AGG_COUNT, nullptr), $5);
+    }
+    |   COUNT '(' col ')' optAsAlias
+    {
+        $$ = std::make_shared<SelectItem>(
+            std::make_shared<AggExpr>(AGG_COUNT, $3), $5);
+    }
+    |   SUM '(' col ')' optAsAlias
+    {
+        $$ = std::make_shared<SelectItem>(
+            std::make_shared<AggExpr>(AGG_SUM, $3), $5);
+    }
+    |   MAX '(' col ')' optAsAlias
+    {
+        $$ = std::make_shared<SelectItem>(
+            std::make_shared<AggExpr>(AGG_MAX, $3), $5);
+    }
+    |   MIN '(' col ')' optAsAlias
+    {
+        $$ = std::make_shared<SelectItem>(
+            std::make_shared<AggExpr>(AGG_MIN, $3), $5);
+    }
+    ;
+
+optAsAlias:
+        /* epsilon */
+    {
+        $$ = "";
+    }
+    |   AS colName
+    {
+        $$ = $2;
+    }
     ;
 
 tableList:

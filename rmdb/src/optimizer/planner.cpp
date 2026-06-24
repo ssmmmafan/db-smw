@@ -319,8 +319,20 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
     //物理优化
     auto sel_cols = query->cols;
     std::shared_ptr<Plan> plannerRoot = physical_optimization(query, context);
-    plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), 
-                                                        std::move(sel_cols));
+
+    bool has_agg = false;
+    for (auto &item : query->sel_items) {
+        if (item.kind == SEL_AGG) {
+            has_agg = true;
+            break;
+        }
+    }
+    if (has_agg) {
+        plannerRoot = std::make_shared<AggPlan>(T_Agg, std::move(plannerRoot), query->sel_items);
+    } else {
+        plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot),
+                                                       std::move(sel_cols));
+    }
 
     return plannerRoot;
 }

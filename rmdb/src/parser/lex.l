@@ -87,6 +87,11 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "ORDER" { return ORDER; }
 "BY" {  return BY;  }
 "ASC" { return ASC; }
+"COUNT" { return COUNT; }
+"SUM" { return SUM; }
+"MAX" { return MAX; }
+"MIN" { return MIN; }
+"AS" { return AS; }
     /* operators */
 ">=" { return GEQ; }
 "<=" { return LEQ; }
