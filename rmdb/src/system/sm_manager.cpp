@@ -87,7 +87,34 @@ void SmManager::drop_db(const std::string& db_name) {
  * @param {string&} db_name 数据库名称，与文件夹同名
  */
 void SmManager::open_db(const std::string& db_name) {
+    if (!is_dir(db_name)) {
+        throw DatabaseNotFoundError(db_name);
+    }
+    if (chdir(db_name.c_str()) < 0) {
+        throw UnixError();
+    }
 
+    std::ifstream ifs(DB_META_NAME);
+    if (!ifs.is_open()) {
+        throw UnixError();
+    }
+    db_ = DbMeta();
+    ifs >> db_;
+    ifs.close();
+
+    fhs_.clear();
+    ihs_.clear();
+    for (auto &entry : db_.tabs_) {
+        auto &tab = entry.second;
+        fhs_.emplace(tab.name, rm_manager_->open_file(tab.name));
+        for (auto &index : tab.indexes) {
+            std::string ix_name = ix_manager_->get_index_name(tab.name, index.cols);
+            ihs_.emplace(ix_name, ix_manager_->open_index(tab.name, index.cols));
+        }
+    }
+
+    int log_fd = disk_manager_->open_file(LOG_FILE_NAME);
+    disk_manager_->SetLogFd(log_fd);
 }
 
 /**
@@ -103,7 +130,22 @@ void SmManager::flush_meta() {
  * @description: 关闭数据库并把数据落盘
  */
 void SmManager::close_db() {
-
+    flush_meta();
+    for (auto &entry : ihs_) {
+        ix_manager_->close_index(entry.second.get());
+    }
+    ihs_.clear();
+    for (auto &entry : fhs_) {
+        rm_manager_->close_file(entry.second.get());
+    }
+    fhs_.clear();
+    if (disk_manager_->GetLogFd() != -1) {
+        disk_manager_->close_file(disk_manager_->GetLogFd());
+        disk_manager_->SetLogFd(-1);
+    }
+    if (chdir("..") < 0) {
+        throw UnixError();
+    }
 }
 
 /**
@@ -213,7 +255,21 @@ void SmManager::create_table(const std::string& tab_name, const std::vector<ColD
  * @param {Context*} context
  */
 void SmManager::drop_table(const std::string& tab_name, Context* context) {
-
+    if (!db_.is_table(tab_name)) {
+        throw TableNotFoundError(tab_name);
+    }
+    TabMeta &tab = db_.get_table(tab_name);
+    std::vector<IndexMeta> indexes = tab.indexes;
+    for (auto &index : indexes) {
+        drop_index(tab_name, index.cols, context);
+    }
+    if (fhs_.count(tab_name)) {
+        rm_manager_->close_file(fhs_.at(tab_name).get());
+        fhs_.erase(tab_name);
+    }
+    rm_manager_->destroy_file(tab_name);
+    db_.tabs_.erase(tab_name);
+    flush_meta();
 }
 
 /**
