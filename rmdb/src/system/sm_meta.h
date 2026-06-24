@@ -76,6 +76,7 @@ struct TabMeta {
     TabMeta(const TabMeta &other) {
         name = other.name;
         for(auto col : other.cols) cols.push_back(col);
+        for(auto index : other.indexes) indexes.push_back(index);
     }
 
     /* 判断当前表中是否存在名为col_name的字段 */
@@ -115,8 +116,30 @@ struct TabMeta {
         throw IndexNotFoundError(name, col_names);
     }
 
+    std::vector<IndexMeta>::const_iterator get_index_meta(const std::vector<std::string>& col_names) const {
+        for(auto index = indexes.begin(); index != indexes.end(); ++index) {
+            if((*index).col_num != col_names.size()) continue;
+            auto& index_cols = (*index).cols;
+            size_t i = 0;
+            for(; i < col_names.size(); ++i) {
+                if(index_cols[i].name.compare(col_names[i]) != 0) 
+                    break;
+            }
+            if(i == col_names.size()) return index;
+        }
+        throw IndexNotFoundError(name, col_names);
+    }
+
     /* 根据字段名称获取字段元数据 */
     std::vector<ColMeta>::iterator get_col(const std::string &col_name) {
+        auto pos = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) { return col.name == col_name; });
+        if (pos == cols.end()) {
+            throw ColumnNotFoundError(col_name);
+        }
+        return pos;
+    }
+
+    std::vector<ColMeta>::const_iterator get_col(const std::string &col_name) const {
         auto pos = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) { return col.name == col_name; });
         if (pos == cols.end()) {
             throw ColumnNotFoundError(col_name);

@@ -10,9 +10,12 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <limits>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "executor_utils.h"
 #include "index/ix.h"
 #include "system/sm.h"
 
@@ -33,6 +36,30 @@ class IndexScanExecutor : public AbstractExecutor {
     std::unique_ptr<RecScan> scan_;
 
     SmManager *sm_manager_;
+
+    void fill_min(char *buf, const ColMeta &col) {
+        if (col.type == TYPE_INT) {
+            int v = std::numeric_limits<int>::min();
+            memcpy(buf, &v, sizeof(int));
+        } else if (col.type == TYPE_FLOAT) {
+            float v = -std::numeric_limits<float>::max();
+            memcpy(buf, &v, sizeof(float));
+        } else {
+            memset(buf, 0, col.len);
+        }
+    }
+
+    void fill_max(char *buf, const ColMeta &col) {
+        if (col.type == TYPE_INT) {
+            int v = std::numeric_limits<int>::max();
+            memcpy(buf, &v, sizeof(int));
+        } else if (col.type == TYPE_FLOAT) {
+            float v = std::numeric_limits<float>::max();
+            memcpy(buf, &v, sizeof(float));
+        } else {
+            memset(buf, 0xff, col.len);
+        }
+    }
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, std::vector<std::string> index_col_names,
@@ -65,16 +92,88 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-        
+        auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols)).get();
+        std::vector<char> lower(index_meta_.col_tot_len);
+        std::vector<char> upper(index_meta_.col_tot_len);
+        int offset = 0;
+        bool stop_prefix = false;
+        bool lower_open = false;
+        bool upper_open = false;
+        for (const auto &col : index_meta_.cols) {
+            fill_min(lower.data() + offset, col);
+            fill_max(upper.data() + offset, col);
+            if (!stop_prefix) {
+                const Condition *eq = nullptr;
+                const Condition *lower_cond = nullptr;
+                const Condition *upper_cond = nullptr;
+                for (const auto &cond : fed_conds_) {
+                    if (!cond.is_rhs_val || cond.lhs_col.col_name != col.name || cond.lhs_col.tab_name != tab_name_) {
+                        continue;
+                    }
+                    if (cond.op == OP_EQ) {
+                        eq = &cond;
+                    } else if (cond.op == OP_GT || cond.op == OP_GE) {
+                        lower_cond = &cond;
+                    } else if (cond.op == OP_LT || cond.op == OP_LE) {
+                        upper_cond = &cond;
+                    }
+                }
+                if (eq != nullptr) {
+                    memcpy(lower.data() + offset, eq->rhs_val.raw->data, col.len);
+                    memcpy(upper.data() + offset, eq->rhs_val.raw->data, col.len);
+                } else {
+                    if (lower_cond != nullptr) {
+                        memcpy(lower.data() + offset, lower_cond->rhs_val.raw->data, col.len);
+                        lower_open = lower_cond->op == OP_GT;
+                    }
+                    if (upper_cond != nullptr) {
+                        memcpy(upper.data() + offset, upper_cond->rhs_val.raw->data, col.len);
+                        upper_open = upper_cond->op == OP_LT;
+                    }
+                    stop_prefix = true;
+                }
+            }
+            offset += col.len;
+        }
+        Iid lower_iid = lower_open ? ih->upper_bound(lower.data()) : ih->lower_bound(lower.data());
+        Iid upper_iid = upper_open ? ih->lower_bound(upper.data()) : ih->upper_bound(upper.data());
+        scan_ = std::make_unique<IxScan>(ih, lower_iid, upper_iid, sm_manager_->get_bpm());
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (eval_conditions(tab_, *rec, fed_conds_)) {
+                return;
+            }
+            scan_->next();
+        }
     }
 
     void nextTuple() override {
-        
+        if (scan_ == nullptr || scan_->is_end()) {
+            return;
+        }
+        scan_->next();
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (eval_conditions(tab_, *rec, fed_conds_)) {
+                return;
+            }
+            scan_->next();
+        }
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        return fh_->get_record(rid_, context_);
     }
+
+    bool is_end() const override { return scan_ == nullptr || scan_->is_end(); }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    size_t tupleLen() const override { return len_; }
+
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
 
     Rid &rid() override { return rid_; }
 };

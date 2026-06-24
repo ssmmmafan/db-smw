@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "executor_utils.h"
 #include "index/ix.h"
 #include "system/sm.h"
 
@@ -41,18 +42,10 @@ class DeleteExecutor : public AbstractExecutor {
     std::unique_ptr<RmRecord> Next() override {
         while (idx_ < rids_.size()) {
             Rid rid = rids_[idx_++];
-            for (size_t i = 0; i < tab_.indexes.size(); ++i) {
-                auto &index = tab_.indexes[i];
-                auto rec = fh_->get_record(rid, context_);
-                auto ih = sm_manager_->ihs_
-                              .at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols))
-                              .get();
-                auto key = std::make_unique<char[]>(index.col_tot_len);
-                int offset = 0;
-                for (int j = 0; j < index.col_num; ++j) {
-                    memcpy(key.get() + offset, rec->data + index.cols[j].offset, index.cols[j].len);
-                    offset += index.cols[j].len;
-                }
+            auto rec = fh_->get_record(rid, context_);
+            for (auto &index : tab_.indexes) {
+                auto key = build_index_key(index, rec->data);
+                auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                 ih->delete_entry(key.get(), context_->txn_);
             }
             fh_->delete_record(rid, context_);

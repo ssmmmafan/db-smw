@@ -80,5 +80,7 @@ class ProjectionExecutor : public AbstractExecutor {
         return std::make_unique<RmRecord>(*record_);
     }
 
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
+
     Rid &rid() override { return _abstract_rid; }
 };

@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "executor_utils.h"
 #include "index/ix.h"
 #include "record/rm_scan.h"
 #include "system/sm.h"
@@ -87,6 +88,8 @@ class SeqScanExecutor : public AbstractExecutor {
         }
         return std::make_unique<RmRecord>(*record_);
     }
+
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
 
     Rid &rid() override { return rid_; }
 };
