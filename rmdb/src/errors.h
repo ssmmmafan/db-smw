@@ -148,6 +148,11 @@ class IntegerOverflowError : public RMDBError {
     IntegerOverflowError() : RMDBError("Integer overflow") {}
 };
 
+class InvalidDateTimeError : public RMDBError {
+   public:
+    InvalidDateTimeError() : RMDBError("Invalid datetime") {}
+};
+
 class IncompatibleTypeError : public RMDBError {
    public:
     IncompatibleTypeError(const std::string &lhs, const std::string &rhs)

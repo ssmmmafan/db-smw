@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
+#include "common/datetime_util.h"
 #include <climits>
 #include <cstdint>
 #include <limits>
@@ -203,7 +204,7 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType lhs_type = lhs_col->type;
         ColType rhs_type;
         if (cond.is_rhs_val) {
-            if (lhs_type == TYPE_BIGINT) {
+            if (lhs_type == TYPE_BIGINT || lhs_type == TYPE_DATETIME) {
                 cond.rhs_val = convert_sv_value(cond.rhs_sv, &(*lhs_col));
             } else {
                 cond.rhs_val = convert_sv_value(cond.rhs_sv);
@@ -251,9 +252,13 @@ Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val, const
             throw IncompatibleTypeError(coltype2str(col->type), coltype2str(val.type));
         }
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
-        val.set_str(str_lit->val);
-        if (col != nullptr && col->type != TYPE_STRING) {
-            throw IncompatibleTypeError(coltype2str(col->type), coltype2str(val.type));
+        if (col != nullptr && col->type == TYPE_DATETIME) {
+            val.set_datetime(parse_datetime(str_lit->val));
+        } else {
+            val.set_str(str_lit->val);
+            if (col != nullptr && col->type != TYPE_STRING) {
+                throw IncompatibleTypeError(coltype2str(col->type), coltype2str(val.type));
+            }
         }
     } else {
         throw InternalError("Unexpected sv value type");

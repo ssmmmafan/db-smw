@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 #include "defs.h"
 #include "record/rm_defs.h"
+#include "common/datetime_util.h"
 
 namespace ast {
 struct Value;
@@ -64,6 +65,11 @@ struct Value {
         str_val = std::move(str_val_);
     }
 
+    void set_datetime(int64_t datetime_val_) {
+        type = TYPE_DATETIME;
+        bigint_val = datetime_val_;
+    }
+
     void init_raw(int len) {
         assert(raw == nullptr);
         raw = std::make_shared<RmRecord>(len);
@@ -76,6 +82,9 @@ struct Value {
         } else if (type == TYPE_FLOAT) {
             assert(len == sizeof(float));
             *(float *)(raw->data) = float_val;
+        } else if (type == TYPE_DATETIME) {
+            assert(len == sizeof(int64_t));
+            *(int64_t *)(raw->data) = bigint_val;
         } else if (type == TYPE_STRING) {
             if (len < (int)str_val.size()) {
                 throw StringOverflowError();
