@@ -120,6 +120,7 @@ void *client_handler(void *sock_fd) {
 
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
         bool finish_analyze = false;
+        bool txn_ok = true;
         pthread_mutex_lock(buffer_mutex);
         YY_BUFFER_STATE buf = yy_scan_string(data_recv);
         if (yyparse() == 0) {
@@ -137,6 +138,7 @@ void *client_handler(void *sock_fd) {
                     portal->run(portalStmt, ql_manager.get(), &txn_id, context);
                     portal->drop();
                 } catch (TransactionAbortException &e) {
+                    txn_ok = false;
                     // 事务需要回滚，需要把abort信息返回给客户端并写入output.txt文件中
                     std::string str = "abort\n";
                     memcpy(data_send, str.c_str(), str.length());
@@ -152,6 +154,7 @@ void *client_handler(void *sock_fd) {
                     outfile << str;
                     outfile.close();
                 } catch (RMDBError &e) {
+                    txn_ok = false;
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
                     std::cerr << e.what() << std::endl;
 
@@ -165,6 +168,8 @@ void *client_handler(void *sock_fd) {
                     outfile.open("output.txt",std::ios::out | std::ios::app);
                     outfile << "failure\n";
                     outfile.close();
+
+                    txn_manager->abort(context->txn_, log_manager.get());
                 }
             }
         }
@@ -178,7 +183,7 @@ void *client_handler(void *sock_fd) {
             break;
         }
         // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
-        if(context->txn_->get_txn_mode() == false)
+        if (txn_ok && context->txn_->get_txn_mode() == false)
         {
             txn_manager->commit(context->txn_, context->log_mgr_);
         }

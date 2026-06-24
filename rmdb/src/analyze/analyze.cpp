@@ -9,6 +9,45 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
+#include <climits>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+
+namespace {
+
+int compare_pos_int_string(const std::string &a, const std::string &b) {
+    if (a.length() != b.length()) {
+        return a.length() < b.length() ? -1 : 1;
+    }
+    return a.compare(b);
+}
+
+int compare_int_string(const std::string &a, const std::string &b) {
+    if (a.empty() || b.empty()) {
+        return a.compare(b);
+    }
+    if (a[0] == '-' && b[0] != '-') {
+        return -1;
+    }
+    if (a[0] != '-' && b[0] == '-') {
+        return 1;
+    }
+    if (a[0] == '-' && b[0] == '-') {
+        return -compare_pos_int_string(a.substr(1), b.substr(1));
+    }
+    const std::string &pa = (a[0] == '+') ? a.substr(1) : a;
+    const std::string &pb = (b[0] == '+') ? b.substr(1) : b;
+    return compare_pos_int_string(pa, pb);
+}
+
+template <typename T>
+bool no_overflow(const std::string &value) {
+    return compare_int_string(value, std::to_string(std::numeric_limits<T>::max())) <= 0 &&
+           compare_int_string(value, std::to_string(std::numeric_limits<T>::lowest())) >= 0;
+}
+
+}  // namespace
 
 /**
  * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
@@ -59,11 +98,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         for (auto &sv_set : x->set_clauses) {
             SetClause set_clause;
             set_clause.lhs = {.tab_name = x->tab_name, .col_name = sv_set->col_name};
-            set_clause.rhs = convert_sv_value(sv_set->val);
             auto col = tab.get_col(sv_set->col_name);
-            if (set_clause.rhs.type != col->type) {
-                throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set_clause.rhs.type));
-            }
+            set_clause.rhs = convert_sv_value(sv_set->val, &(*col));
             set_clause.rhs.init_raw(col->len);
             query->set_clauses.push_back(set_clause);
         }
@@ -80,9 +116,12 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
         }
-        // 处理insert 的values值
-        for (auto &sv_val : x->vals) {
-            query->values.push_back(convert_sv_value(sv_val));
+        TabMeta &tab = sm_manager_->db_.get_table(x->tab_name);
+        if (x->vals.size() != tab.cols.size()) {
+            throw InvalidValueCountError();
+        }
+        for (size_t i = 0; i < x->vals.size(); i++) {
+            query->values.push_back(convert_sv_value(x->vals[i], &tab.cols[i]));
         }
     } else {
         // do nothing
@@ -139,7 +178,7 @@ void Analyze::get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv
         cond.op = convert_sv_comp_op(expr->op);
         if (auto rhs_val = std::dynamic_pointer_cast<ast::Value>(expr->rhs)) {
             cond.is_rhs_val = true;
-            cond.rhs_val = convert_sv_value(rhs_val);
+            cond.rhs_sv = rhs_val;
         } else if (auto rhs_col = std::dynamic_pointer_cast<ast::Col>(expr->rhs)) {
             cond.is_rhs_val = false;
             cond.rhs_col = {.tab_name = rhs_col->tab_name, .col_name = rhs_col->col_name};
@@ -164,14 +203,20 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType lhs_type = lhs_col->type;
         ColType rhs_type;
         if (cond.is_rhs_val) {
-            if (lhs_type == TYPE_FLOAT && cond.rhs_val.type == TYPE_INT) {
-                cond.rhs_val.set_float(static_cast<float>(cond.rhs_val.int_val));
-            } else if (lhs_type == TYPE_INT && cond.rhs_val.type == TYPE_FLOAT) {
-                cond.rhs_val.set_int(static_cast<int>(cond.rhs_val.float_val));
-            } else if (lhs_type != cond.rhs_val.type) {
-                throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(cond.rhs_val.type));
+            if (lhs_type == TYPE_BIGINT) {
+                cond.rhs_val = convert_sv_value(cond.rhs_sv, &(*lhs_col));
+            } else {
+                cond.rhs_val = convert_sv_value(cond.rhs_sv);
+                if (lhs_type == TYPE_FLOAT && cond.rhs_val.type == TYPE_INT) {
+                    cond.rhs_val.set_float(static_cast<float>(cond.rhs_val.int_val));
+                } else if (lhs_type == TYPE_INT && cond.rhs_val.type == TYPE_FLOAT) {
+                    cond.rhs_val.set_int(static_cast<int>(cond.rhs_val.float_val));
+                } else if (lhs_type != cond.rhs_val.type) {
+                    throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(cond.rhs_val.type));
+                }
             }
             cond.rhs_val.init_raw(lhs_col->len);
+            cond.rhs_sv = nullptr;
             rhs_type = cond.rhs_val.type;
         } else {
             TabMeta &rhs_tab = sm_manager_->db_.get_table(cond.rhs_col.tab_name);
@@ -185,16 +230,36 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
 }
 
 
-Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
+Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val, const ColMeta *col) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        val.set_int(int_lit->val);
+        const std::string &int_str = int_lit->val;
+        if (col != nullptr && col->type == TYPE_BIGINT) {
+            if (!no_overflow<int64_t>(int_str)) {
+                throw IntegerOverflowError();
+            }
+            val.set_bigint(std::stoll(int_str));
+        } else {
+            if (!no_overflow<int>(int_str)) {
+                throw IntegerOverflowError();
+            }
+            val.set_int(std::stoi(int_str));
+        }
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
+        if (col != nullptr && col->type != TYPE_FLOAT) {
+            throw IncompatibleTypeError(coltype2str(col->type), coltype2str(val.type));
+        }
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
         val.set_str(str_lit->val);
+        if (col != nullptr && col->type != TYPE_STRING) {
+            throw IncompatibleTypeError(coltype2str(col->type), coltype2str(val.type));
+        }
     } else {
         throw InternalError("Unexpected sv value type");
+    }
+    if (col != nullptr && val.type != col->type) {
+        throw IncompatibleTypeError(coltype2str(col->type), coltype2str(val.type));
     }
     return val;
 }

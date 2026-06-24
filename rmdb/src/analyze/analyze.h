@@ -54,7 +54,7 @@ private:
     void get_all_cols(const std::vector<std::string> &tab_names, std::vector<ColMeta> &all_cols);
     void get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv_conds, std::vector<Condition> &conds);
     void check_clause(const std::vector<std::string> &tab_names, std::vector<Condition> &conds);
-    Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);
+    Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val, const ColMeta *col = nullptr);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
 };
 

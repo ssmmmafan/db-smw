@@ -45,6 +45,7 @@ private:
         static std::map<SvType, std::string> m{
                 {SV_TYPE_INT,    "INT"},
                 {SV_TYPE_FLOAT,  "FLOAT"},
+                {SV_TYPE_BIGINT, "BIGINT"},
                 {SV_TYPE_STRING, "STRING"},
         };
         return m.at(type);
