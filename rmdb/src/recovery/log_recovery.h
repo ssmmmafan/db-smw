@@ -40,6 +40,7 @@ class RecoveryManager {
 
    private:
     std::map<txn_id_t, lsn_t> att_;
+    std::unordered_set<txn_id_t> committed_txns_;
     std::unordered_set<txn_id_t> aborted_txns_;
     std::unordered_set<std::string> tables_with_dml_;
     std::vector<std::shared_ptr<LogRecord>> logs_;

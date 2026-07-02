@@ -98,9 +98,6 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-        if (context_ != nullptr && context_->txn_ != nullptr && context_->lock_mgr_ != nullptr) {
-            context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
-        }
         auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols)).get();
         std::vector<char> lower(index_meta_.col_tot_len);
         std::vector<char> upper(index_meta_.col_tot_len);
@@ -143,6 +140,14 @@ class IndexScanExecutor : public AbstractExecutor {
                 }
             }
             offset += col.len;
+        }
+        if (context_ != nullptr && context_->txn_ != nullptr && context_->lock_mgr_ != nullptr &&
+            context_->txn_->get_txn_mode()) {
+            std::vector<ColType> col_types;
+            std::vector<int> col_lens;
+            index_col_meta(index_meta_, col_types, col_lens);
+            context_->lock_mgr_->lock_shared_on_gap_range(context_->txn_, ih->get_fd(), col_types, col_lens,
+                                                          lower.data(), upper.data(), lower_open, upper_open);
         }
         Iid lower_iid = lower_open ? ih->upper_bound(lower.data()) : ih->lower_bound(lower.data());
         Iid upper_iid = upper_open ? ih->lower_bound(upper.data()) : ih->upper_bound(upper.data());

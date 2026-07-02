@@ -36,12 +36,13 @@ class SeqScanExecutor : public AbstractExecutor {
 
     void find_next() {
         is_end_ = true;
-        record_.reset();
+        if (!record_) {
+            record_ = std::make_unique<RmRecord>(len_);
+        }
         while (!scan_->is_end()) {
             rid_ = scan_->rid();
-            auto rec = fh_->get_record(rid_, context_);
-            if (eval_conds(fed_conds_, rec.get(), cols_)) {
-                record_ = std::move(rec);
+            fh_->get_record(rid_, record_.get(), context_);
+            if (eval_conds(fed_conds_, record_.get(), cols_)) {
                 is_end_ = false;
                 return;
             }
@@ -70,7 +71,8 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end() const override { return is_end_; }
 
     void beginTuple() override {
-        if (context_ != nullptr && context_->txn_ != nullptr && context_->lock_mgr_ != nullptr) {
+        if (context_ != nullptr && context_->txn_ != nullptr && context_->lock_mgr_ != nullptr &&
+            context_->txn_->get_txn_mode()) {
             context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         }
         scan_ = std::make_unique<RmScan>(fh_);
@@ -91,6 +93,8 @@ class SeqScanExecutor : public AbstractExecutor {
         }
         return std::make_unique<RmRecord>(*record_);
     }
+
+    const RmRecord *peekTuple() const override { return is_end_ ? nullptr : record_.get(); }
 
     ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
 

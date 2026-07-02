@@ -58,18 +58,21 @@ class DeleteExecutor : public AbstractExecutor {
         while (idx_ < rids_.size()) {
             Rid rid = rids_[idx_++];
             auto rec = fh_->get_record(rid, context_);
+            lock_exclusive_gap_for_record(context_, sm_manager_, tab_name_, tab_, rec->data);
+            ensure_begin_logged(context_);
 
             auto *log_record = new DeleteLogRecord(context_->txn_->get_transaction_id(), *rec, rid, tab_name_);
             log_record->prev_lsn_ = context_->txn_->get_prev_lsn();
             context_->log_mgr_->add_log_to_buffer(log_record);
             context_->txn_->set_prev_lsn(log_record->lsn_);
 
-            delete_index(rec.get(), rid);
             fh_->delete_record(rid, context_);
+            delete_index(rec.get(), rid);
             if (context_->txn_ != nullptr) {
                 context_->txn_->append_write_record(new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
             }
         }
+        persist_wal(context_);
         return nullptr;
     }
 

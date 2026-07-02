@@ -99,28 +99,35 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
         txn_map[txn_id] = txn;
     }
     txn->set_state(TransactionState::GROWING);
-    if (log_manager != nullptr) {
-        auto *log = new BeginLogRecord(txn->get_transaction_id());
-        log->prev_lsn_ = txn->get_prev_lsn();
-        log_manager->add_log_to_buffer(log);
-        txn->set_prev_lsn(log->lsn_);
-    }
     return txn;
+}
+
+void TransactionManager::ensure_txn_logged(Transaction *txn, LogManager *log_manager) {
+    if (txn == nullptr || log_manager == nullptr || txn->get_prev_lsn() != INVALID_LSN) {
+        return;
+    }
+    auto *log = new BeginLogRecord(txn->get_transaction_id());
+    log->prev_lsn_ = txn->get_prev_lsn();
+    log_manager->add_log_to_buffer(log);
+    txn->set_prev_lsn(log->lsn_);
 }
 
 void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
     if (txn == nullptr) {
         return;
     }
-    if (log_manager != nullptr) {
+    bool had_writes = !txn->get_write_set()->empty();
+    if (log_manager != nullptr && had_writes) {
+        ensure_txn_logged(txn, log_manager);
         auto *log = new CommitLogRecord(txn->get_transaction_id());
         log->prev_lsn_ = txn->get_prev_lsn();
         log_manager->add_log_to_buffer(log);
         txn->set_prev_lsn(log->lsn_);
+        log_manager->flush_log_to_disk();
     }
     clear_write_set(txn->get_write_set());
     release_all_locks(lock_manager_, txn);
-    if (sm_manager_ != nullptr && sm_manager_->get_bpm() != nullptr) {
+    if (had_writes && sm_manager_ != nullptr && sm_manager_->get_bpm() != nullptr) {
         sm_manager_->get_bpm()->flush_all_dirty_pages();
     }
     txn->set_state(TransactionState::COMMITTED);
@@ -131,17 +138,19 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         return;
     }
     auto write_set = txn->get_write_set();
+    bool had_writes = !write_set->empty();
     while (!write_set->empty()) {
         WriteRecord *write_record = write_set->back();
         write_set->pop_back();
         undo_write_record(sm_manager_, write_record);
         delete write_record;
     }
-    if (log_manager != nullptr) {
+    if (log_manager != nullptr && had_writes) {
         auto *log = new AbortLogRecord(txn->get_transaction_id());
         log->prev_lsn_ = txn->get_prev_lsn();
         log_manager->add_log_to_buffer(log);
         txn->set_prev_lsn(log->lsn_);
+        log_manager->flush_log_to_disk();
     }
     release_all_locks(lock_manager_, txn);
     txn->set_state(TransactionState::ABORTED);

@@ -75,6 +75,8 @@ class InsertExecutor : public AbstractExecutor {
             keys.push_back(std::move(key));
         }
 
+        lock_exclusive_gap_for_record(context_, sm_manager_, tab_name_, tab_, rec.data);
+        ensure_begin_logged(context_);
         rid_ = fh_->insert_record(rec.data, context_);
 
         auto *log_record = new InsertLogRecord(context_->txn_->get_transaction_id(), rec, rid_, tab_name_);
@@ -91,6 +93,7 @@ class InsertExecutor : public AbstractExecutor {
         if (context_->txn_ != nullptr) {
             context_->txn_->append_write_record(new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
         }
+        persist_wal(context_);
         return nullptr;
     }
     Rid &rid() override { return rid_; }

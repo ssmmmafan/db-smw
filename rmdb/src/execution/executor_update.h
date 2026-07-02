@@ -67,6 +67,7 @@ class UpdateExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        ensure_begin_logged(context_);
         std::vector<std::unique_ptr<RmRecord>> old_records;
         std::vector<std::unique_ptr<RmRecord>> new_records;
         old_records.reserve(rids_.size());
@@ -108,6 +109,8 @@ class UpdateExecutor : public AbstractExecutor {
         }
 
         for (size_t rec_i = 0; rec_i < rids_.size(); rec_i++) {
+            lock_exclusive_gap_for_record(context_, sm_manager_, tab_name_, tab_, old_records[rec_i]->data);
+            lock_exclusive_gap_for_record(context_, sm_manager_, tab_name_, tab_, new_records[rec_i]->data);
             for (auto &index : tab_.indexes) {
                 delete_index_entry(old_records[rec_i].get(), rids_[rec_i], index);
             }
@@ -127,6 +130,7 @@ class UpdateExecutor : public AbstractExecutor {
             }
             fh_->update_record(rids_[rec_i], new_records[rec_i]->data, context_);
         }
+        persist_wal(context_);
         return nullptr;
     }
 

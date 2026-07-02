@@ -34,6 +34,8 @@ public:
 
     Transaction* begin(Transaction* txn, LogManager* log_manager);
 
+    void ensure_txn_logged(Transaction* txn, LogManager* log_manager);
+
     void commit(Transaction* txn, LogManager* log_manager);
 
     void abort(Transaction* txn, LogManager* log_manager);

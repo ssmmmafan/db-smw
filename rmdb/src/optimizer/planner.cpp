@@ -149,6 +149,60 @@ std::shared_ptr<Plan> pop_scan(int *scantbl, std::string table, std::vector<std:
     return nullptr;
 }
 
+static size_t estimate_scan_rows(const std::shared_ptr<ScanPlan> &scan, SmManager *sm_manager) {
+    auto &fh = sm_manager->fhs_.at(scan->tab_name_);
+    auto hdr = fh->get_file_hdr();
+    if (hdr.num_pages <= 1) {
+        return 0;
+    }
+    size_t rows = static_cast<size_t>(hdr.num_pages - 1) * static_cast<size_t>(hdr.num_records_per_page);
+    for (const auto &cond : scan->fed_conds_) {
+        if (!cond.is_rhs_val || cond.lhs_col.tab_name != scan->tab_name_ || cond.rhs_val.type != TYPE_INT) {
+            continue;
+        }
+        int bound = *reinterpret_cast<const int *>(cond.rhs_val.raw->data);
+        if (bound < 0) {
+            continue;
+        }
+        if (cond.op == OP_LT) {
+            rows = std::min(rows, static_cast<size_t>(bound));
+        } else if (cond.op == OP_LE) {
+            rows = std::min(rows, static_cast<size_t>(bound) + 1);
+        } else if (cond.op == OP_EQ) {
+            rows = std::min(rows, static_cast<size_t>(1));
+        }
+    }
+    return rows;
+}
+
+static void maybe_swap_join_children(std::shared_ptr<Plan> &left, std::shared_ptr<Plan> &right,
+                                     std::vector<Condition> &conds, SmManager *sm_manager) {
+    auto ls = std::dynamic_pointer_cast<ScanPlan>(left);
+    auto rs = std::dynamic_pointer_cast<ScanPlan>(right);
+    if (!ls || !rs) {
+        return;
+    }
+    size_t lcnt = estimate_scan_rows(ls, sm_manager);
+    size_t rcnt = estimate_scan_rows(rs, sm_manager);
+    if (lcnt <= rcnt) {
+        return;
+    }
+    std::swap(left, right);
+    for (auto &c : conds) {
+        std::swap(c.lhs_col, c.rhs_col);
+        static const std::map<CompOp, CompOp> swap_op = {
+            {OP_EQ, OP_EQ}, {OP_NE, OP_NE}, {OP_LT, OP_GT}, {OP_GT, OP_LT}, {OP_LE, OP_GE}, {OP_GE, OP_LE},
+        };
+        c.op = swap_op.at(c.op);
+    }
+}
+
+static std::shared_ptr<Plan> make_join_plan(std::shared_ptr<Plan> left, std::shared_ptr<Plan> right,
+                                             std::vector<Condition> conds, SmManager *sm_manager) {
+    maybe_swap_join_children(left, right, conds, sm_manager);
+    return std::make_shared<JoinPlan>(T_NestLoop, std::move(left), std::move(right), std::move(conds));
+}
+
 
 std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> query, Context *context)
 {
@@ -220,7 +274,7 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
             right = pop_scan(scantbl, it->rhs_col.tab_name, joined_tables, table_scan_executors);
             std::vector<Condition> join_conds{*it};
             //建立join
-            table_join_executors = std::make_shared<JoinPlan>(T_NestLoop, std::move(left), std::move(right), join_conds);
+            table_join_executors = make_join_plan(std::move(left), std::move(right), std::move(join_conds), sm_manager_);
             it = conds.erase(it);
             break;
         }
@@ -240,13 +294,12 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
 
             if(left_need_to_join_executors != nullptr && right_need_to_join_executors != nullptr) {
                 std::vector<Condition> join_conds{*it};
-                std::shared_ptr<Plan> temp_join_executors = std::make_shared<JoinPlan>(T_NestLoop, 
-                                                                    std::move(left_need_to_join_executors), 
-                                                                    std::move(right_need_to_join_executors), 
-                                                                    join_conds);
-                table_join_executors = std::make_shared<JoinPlan>(T_NestLoop, std::move(temp_join_executors), 
-                                                                    std::move(table_join_executors), 
-                                                                    std::vector<Condition>());
+                std::shared_ptr<Plan> temp_join_executors = make_join_plan(
+                    std::move(left_need_to_join_executors), std::move(right_need_to_join_executors),
+                    std::move(join_conds), sm_manager_);
+                std::vector<Condition> empty_conds;
+                table_join_executors = make_join_plan(std::move(temp_join_executors), std::move(table_join_executors),
+                                                      std::move(empty_conds), sm_manager_);
             } else if(left_need_to_join_executors != nullptr || right_need_to_join_executors != nullptr) {
                 if(isneedreverse) {
                     std::map<CompOp, CompOp> swap_op = {
@@ -257,8 +310,9 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
                     left_need_to_join_executors = std::move(right_need_to_join_executors);
                 }
                 std::vector<Condition> join_conds{*it};
-                table_join_executors = std::make_shared<JoinPlan>(T_NestLoop, std::move(left_need_to_join_executors), 
-                                                                    std::move(table_join_executors), join_conds);
+                table_join_executors = make_join_plan(std::move(left_need_to_join_executors),
+                                                      std::move(table_join_executors), std::move(join_conds),
+                                                      sm_manager_);
             } else {
                 push_conds(std::move(&(*it)), table_join_executors);
             }
@@ -272,8 +326,9 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
     //连接剩余表
     for (size_t i = 0; i < tables.size(); i++) {
         if(scantbl[i] == -1) {
-            table_join_executors = std::make_shared<JoinPlan>(T_NestLoop, std::move(table_scan_executors[i]), 
-                                                    std::move(table_join_executors), std::vector<Condition>());
+            std::vector<Condition> empty_conds;
+            table_join_executors = make_join_plan(std::move(table_scan_executors[i]), std::move(table_join_executors),
+                                                  std::move(empty_conds), sm_manager_);
         }
     }
 

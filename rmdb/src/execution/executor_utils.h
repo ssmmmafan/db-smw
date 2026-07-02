@@ -7,8 +7,11 @@ RMDB is licensed under Mulan PSL v2. */
 #include <vector>
 
 #include "common/common.h"
+#include "common/context.h"
 #include "index/ix_index_handle.h"
+#include "recovery/log_manager.h"
 #include "record/rm_defs.h"
+#include "system/sm_manager.h"
 #include "system/sm_meta.h"
 
 inline int compare_raw_value(const char *lhs, const char *rhs, ColType type, int len) {
@@ -66,4 +69,47 @@ inline std::unique_ptr<char[]> build_index_key(const IndexMeta &index, const cha
         offset += col.len;
     }
     return key;
+}
+
+inline void index_col_meta(const IndexMeta &index, std::vector<ColType> &types, std::vector<int> &lens) {
+    types.clear();
+    lens.clear();
+    for (const auto &col : index.cols) {
+        types.push_back(col.type);
+        lens.push_back(col.len);
+    }
+}
+
+inline void lock_exclusive_gap_for_record(Context *context, SmManager *sm_manager, const std::string &tab_name,
+                                            const TabMeta &tab, const char *record_data) {
+    if (context == nullptr || context->txn_ == nullptr || context->lock_mgr_ == nullptr ||
+        !context->txn_->get_txn_mode()) {
+        return;
+    }
+    for (auto &index : tab.indexes) {
+        auto ih = sm_manager->ihs_.at(sm_manager->get_ix_manager()->get_index_name(tab_name, index.cols)).get();
+        auto key = build_index_key(index, record_data);
+        std::vector<ColType> types;
+        std::vector<int> lens;
+        index_col_meta(index, types, lens);
+        context->lock_mgr_->lock_exclusive_on_gap_point(context->txn_, ih->get_fd(), types, lens, key.get(),
+                                                        index.col_tot_len);
+    }
+}
+
+inline void ensure_begin_logged(Context *context) {
+    if (context == nullptr || context->log_mgr_ == nullptr || context->txn_ == nullptr ||
+        context->txn_->get_prev_lsn() != INVALID_LSN) {
+        return;
+    }
+    auto *log = new BeginLogRecord(context->txn_->get_transaction_id());
+    log->prev_lsn_ = context->txn_->get_prev_lsn();
+    context->log_mgr_->add_log_to_buffer(log);
+    context->txn_->set_prev_lsn(log->lsn_);
+}
+
+inline void persist_wal(Context *context) {
+    if (context != nullptr && context->log_mgr_ != nullptr) {
+        context->log_mgr_->flush_log_to_disk();
+    }
 }

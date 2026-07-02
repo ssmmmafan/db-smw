@@ -108,8 +108,9 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
             }
             case T_Transaction_begin:
             {
-                // 显示开启一个事务
+                txn_mgr_->ensure_txn_logged(context->txn_, context->log_mgr_);
                 context->txn_->set_txn_mode(true);
+                context->txn_->set_state(TransactionState::GROWING);
                 break;
             }  
             case T_Transaction_commit:

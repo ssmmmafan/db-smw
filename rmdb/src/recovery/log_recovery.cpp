@@ -69,17 +69,16 @@ void RecoveryManager::analyze() {
             log->deserialize(buffer_.buffer_ + offset);
             offset += static_cast<int>(log->log_tot_len_);
             logs_.push_back(log);
-            lsn_t log_idx = static_cast<lsn_t>(logs_.size() - 1);
             max_txn_id_ = std::max(max_txn_id_, log->log_tid_);
 
             if (log_type == LogType::begin) {
-                att_[log->log_tid_] = log_idx;
+                att_[log->log_tid_] = log->lsn_;
             } else if (log_type == LogType::commit || log_type == LogType::ABORT) {
                 assert(att_.count(log->log_tid_));
-                att_[log->log_tid_] = log_idx;
+                att_[log->log_tid_] = log->lsn_;
             } else {
                 assert(att_.count(log->log_tid_));
-                att_[log->log_tid_] = log_idx;
+                att_[log->log_tid_] = log->lsn_;
                 if (log_type == LogType::INSERT) {
                     auto insert_log = std::dynamic_pointer_cast<InsertLogRecord>(log);
                     tables.insert(std::string(insert_log->table_name_));
@@ -97,8 +96,11 @@ void RecoveryManager::analyze() {
 
     for (const auto &entry : att_) {
         if (entry.second >= 0 && static_cast<size_t>(entry.second) < logs_.size()) {
-            if (std::dynamic_pointer_cast<AbortLogRecord>(logs_[entry.second])) {
+            const auto &last_log = logs_[entry.second];
+            if (std::dynamic_pointer_cast<AbortLogRecord>(last_log)) {
                 aborted_txns_.insert(entry.first);
+            } else if (std::dynamic_pointer_cast<CommitLogRecord>(last_log)) {
+                committed_txns_.insert(entry.first);
             }
         }
     }
@@ -126,7 +128,7 @@ void RecoveryManager::analyze() {
 void RecoveryManager::redo() {
     rollback(true);
     for (const auto &log_ : logs_) {
-        if (aborted_txns_.count(log_->log_tid_)) {
+        if (aborted_txns_.count(log_->log_tid_) || !committed_txns_.count(log_->log_tid_)) {
             continue;
         }
         if (auto log = std::dynamic_pointer_cast<InsertLogRecord>(log_)) {
@@ -173,9 +175,13 @@ void RecoveryManager::rebuild_indexes_from_table() {
         auto rfh = sm_manager_->fhs_[tab_name].get();
         for (const auto &index : tab.indexes) {
             auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab.name, index.cols);
-            if (!sm_manager_->ihs_.count(ix_name)) {
-                continue;
+            if (sm_manager_->ihs_.count(ix_name)) {
+                sm_manager_->get_ix_manager()->close_index(sm_manager_->ihs_[ix_name].get());
+                sm_manager_->ihs_.erase(ix_name);
             }
+            sm_manager_->get_ix_manager()->destroy_index(tab.name, index.cols);
+            sm_manager_->get_ix_manager()->create_index(tab.name, index.cols);
+            sm_manager_->ihs_.emplace(ix_name, sm_manager_->get_ix_manager()->open_index(tab.name, index.cols));
             auto ih = sm_manager_->ihs_.at(ix_name).get();
             for (RmScan scan(rfh); !scan.is_end(); scan.next()) {
                 Rid rid = scan.rid();
@@ -236,7 +242,10 @@ void RecoveryManager::rollback(bool redo_phase) {
                     const std::string ix_name(log->ix_name_);
                     if (sm_manager_->ihs_.count(ix_name)) {
                         auto ih = sm_manager_->ihs_.at(ix_name).get();
-                        ih->delete_entry(log->key_, nullptr);
+                        try {
+                            ih->delete_entry(log->key_, nullptr);
+                        } catch (RMDBError &) {
+                        }
                     }
                 }
                 now = log->prev_lsn_;
@@ -245,7 +254,10 @@ void RecoveryManager::rollback(bool redo_phase) {
                     const std::string ix_name(log->ix_name_);
                     if (sm_manager_->ihs_.count(ix_name)) {
                         auto ih = sm_manager_->ihs_.at(ix_name).get();
-                        ih->insert_entry(log->key_, log->rid_, nullptr);
+                        try {
+                            ih->insert_entry(log->key_, log->rid_, nullptr);
+                        } catch (RMDBError &) {
+                        }
                     }
                 }
                 now = log->prev_lsn_;

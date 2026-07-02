@@ -13,10 +13,10 @@ See the Mulan PSL v2 for more details. */
 namespace {
 
 void lock_record_read(Context *context, int fd, const Rid &rid) {
-    if (context == nullptr || context->txn_ == nullptr || context->lock_mgr_ == nullptr) {
+    if (context == nullptr || context->txn_ == nullptr || context->lock_mgr_ == nullptr ||
+        !context->txn_->get_txn_mode()) {
         return;
     }
-    context->lock_mgr_->lock_IS_on_table(context->txn_, fd);
     context->lock_mgr_->lock_shared_on_record(context->txn_, rid, fd);
 }
 
@@ -24,16 +24,7 @@ void lock_record_write(Context *context, int fd, const Rid &rid) {
     if (context == nullptr || context->txn_ == nullptr || context->lock_mgr_ == nullptr) {
         return;
     }
-    context->lock_mgr_->lock_IX_on_table(context->txn_, fd);
     context->lock_mgr_->lock_exclusive_on_record(context->txn_, rid, fd);
-}
-
-void lock_table_insert(Context *context, int fd) {
-    if (context == nullptr || context->txn_ == nullptr || context->lock_mgr_ == nullptr) {
-        return;
-    }
-    context->lock_mgr_->lock_IX_on_table(context->txn_, fd);
-    context->lock_mgr_->lock_exclusive_on_table(context->txn_, fd);
 }
 
 }  // namespace
@@ -53,6 +44,13 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     return record;
 }
 
+void RmFileHandle::get_record(const Rid &rid, RmRecord *dest, Context *context) const {
+    lock_record_read(context, fd_, rid);
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    memcpy(dest->data, page_handle.get_slot(rid.slot_no), file_hdr_.record_size);
+    buffer_pool_manager_->unpin_page({fd_, rid.page_no}, false);
+}
+
 /**
  * @description: 在当前表中插入一条记录，不指定插入位置
  * @param {char*} buf 要插入的记录的数据
@@ -60,9 +58,10 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
  * @return {Rid} 插入的记录的记录号（位置）
  */
 Rid RmFileHandle::insert_record(char* buf, Context* context) {
-    lock_table_insert(context, fd_);
     RmPageHandle page_handle = create_page_handle();
     int slot_no = Bitmap::first_bit(false, page_handle.bitmap, file_hdr_.num_records_per_page);
+    Rid rid{page_handle.page->get_page_id().page_no, slot_no};
+    lock_record_write(context, fd_, rid);
     char *slot = page_handle.get_slot(slot_no);
     memcpy(slot, buf, file_hdr_.record_size);
     Bitmap::set(page_handle.bitmap, slot_no);
@@ -72,7 +71,7 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
         disk_manager_->write_page(fd_, RM_FILE_HDR_PAGE, (char *)&file_hdr_, sizeof(file_hdr_));
     }
     buffer_pool_manager_->unpin_page({fd_, page_handle.page->get_page_id().page_no}, true);
-    return Rid{page_handle.page->get_page_id().page_no, slot_no};
+    return rid;
 }
 
 /**

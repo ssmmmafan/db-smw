@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <string>
 
 #include "common/config.h"
 #include "defs.h"
@@ -65,8 +66,8 @@ class WriteRecord {
     RmRecord record_;
 };
 
-/* 多粒度锁，加锁对象的类型，包括记录和表 */
-enum class LockDataType { TABLE = 0, RECORD = 1 };
+/* 多粒度锁，加锁对象的类型，包括记录、表和索引间隙 */
+enum class LockDataType { TABLE = 0, RECORD = 1, GAP = 2 };
 
 /**
  * @description: 加锁对象的唯一标识
@@ -90,25 +91,43 @@ class LockDataId {
         type_ = type;
     }
 
+    /* 索引间隙锁：gap_key_ 编码范围或点 */
+    LockDataId(int index_fd, std::string gap_key) {
+        fd_ = index_fd;
+        rid_.page_no = -1;
+        rid_.slot_no = -1;
+        type_ = LockDataType::GAP;
+        gap_key_ = std::move(gap_key);
+    }
+
     inline int64_t Get() const {
         if (type_ == LockDataType::TABLE) {
-            // fd_
             return static_cast<int64_t>(fd_);
-        } else {
-            // fd_, rid_.page_no, rid.slot_no
+        }
+        if (type_ == LockDataType::RECORD) {
             return ((static_cast<int64_t>(type_)) << 63) | ((static_cast<int64_t>(fd_)) << 31) |
                    ((static_cast<int64_t>(rid_.page_no)) << 16) | rid_.slot_no;
         }
+        return ((static_cast<int64_t>(type_)) << 63) |
+               (static_cast<int64_t>(std::hash<std::string>{}(gap_key_ + std::to_string(fd_))));
     }
 
     bool operator==(const LockDataId &other) const {
-        if (type_ != other.type_) return false;
-        if (fd_ != other.fd_) return false;
-        return rid_ == other.rid_;
+        if (type_ != other.type_ || fd_ != other.fd_) {
+            return false;
+        }
+        if (type_ == LockDataType::RECORD) {
+            return rid_ == other.rid_;
+        }
+        if (type_ == LockDataType::GAP) {
+            return gap_key_ == other.gap_key_;
+        }
+        return true;
     }
     int fd_;
     Rid rid_;
     LockDataType type_;
+    std::string gap_key_;
 };
 
 template <>

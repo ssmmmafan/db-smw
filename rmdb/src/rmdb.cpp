@@ -106,6 +106,8 @@ void *client_handler(void *sock_fd) {
         }
         if (strcmp(data_recv, "crash") == 0) {
             std::cout << "Server crash" << std::endl;
+            log_manager->flush_log_to_disk();
+            buffer_pool_manager->flush_all_dirty_pages();
             exit(1);
         }
 
